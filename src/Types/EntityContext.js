@@ -1213,16 +1213,38 @@ $data.Class.define('$data.EntityContext', null, null,
                     }
                 }
 
-                //type before events with items
-                this.processEntityTypeBeforeEventHandler(skipItems, entityCachedItem);
-
                 var navigationProperties = [];
+                var complexProperties = [];
                 var smPhyMemDefs = sModel.PhysicalType.memberDefinitions.asArray();
                 for (var ism = 0; ism < smPhyMemDefs.length; ism++) {
                     var p = smPhyMemDefs[ism];
                     if (p.kind == $data.MemberTypes.navProperty)
                         navigationProperties.push(p);
+                    if (p.kind == $data.MemberTypes.complexProperty)
+                        complexProperties.push(p);
                 }
+
+                for (var j = 0; j < complexProperties.length; j++) {
+                    var complexProp = complexProperties[j];
+                    var name = complexProp.name;
+                    var connectedDataList = [].concat(entityCachedItem.data[name]);
+                    for (var k = 0; k < connectedDataList.length; k++) {
+                        var data = connectedDataList[k];
+
+                        if (data && data.changedProperties && data.changedProperties.length > 0){
+                            entityCachedItem.data._setPropertyChanged(complexProp);
+                            if (entityCachedItem.skipSave){
+                                delete entityCachedItem.skipSave;
+                                skipItems.splice(skipItems.indexOf(entityCachedItem.data), 1);
+                            }
+                            this.discoverDependentItemEntityState(entityCachedItem.data);
+                        }
+                    }
+                }
+
+                //type before events with items
+                this.processEntityTypeBeforeEventHandler(skipItems, entityCachedItem);
+
                 //var navigationProperties = sModel.PhysicalType.memberDefinitions.asArray().filter(function (p) { return p.kind == $data.MemberTypes.navProperty; });
                 //navigationProperties.forEach(function (navProp) {
                 for (var j = 0; j < navigationProperties.length; j++) {
@@ -1584,6 +1606,7 @@ $data.Class.define('$data.EntityContext', null, null,
         return pHandlerResult;
     },
     discoverDependentItemEntityState: function (data) {
+        if (data.entityState && data.entityState !== $data.EntityState.Unchanged) return;
         if (data.storeToken === this.storeToken) {
             data.entityState = (data.changedProperties && data.changedProperties.length) ? $data.EntityState.Modified : $data.EntityState.Unchanged;
         } else if (data.storeToken && this.storeToken && data.storeToken.typeName === this.storeToken.typeName && JSON.stringify(data.storeToken.args) === JSON.stringify(this.storeToken.args)) {
@@ -2013,6 +2036,18 @@ $data.Class.define('$data.EntityContext', null, null,
         }
         var entitySet = this.getEntitySetFromElementType(entity.getType());
         return entitySet.attachOrGet(entity, mode);
+    },
+    detach: function (entity) {
+        /// <summary>
+        ///     Detaches an entity from its matching entity set.
+        /// </summary>
+        /// <param name="entity" type="$data.Entity" />
+
+        if (entity instanceof $data.EntityWrapper) {
+            entity = entity.getEntity();
+        }
+        var entitySet = this.getEntitySetFromElementType(entity.getType());
+        return entitySet.detach(entity);
     },
 
     addMany: function (entities) {

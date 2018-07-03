@@ -21,6 +21,9 @@ $data.Class.define('$data.Queryable', null, null,
         this.entityContext = context;
         this.expression = rootExpression;
     },
+    toJSON: function(){
+        return JSON.stringify(this.expression);
+    },
 
     filter: function (predicate, thisArg) {
         ///<summary>Filters a set of entities using a boolean expression.</summary>
@@ -539,6 +542,13 @@ $data.Class.define('$data.Queryable', null, null,
         var distinctExp = Container.createDistinctExpression(this.expression);
         return Container.createQueryable(this, distinctExp);
     },
+    groupBy: function groupBy(selector, thisArg) {
+        this._checkOperation('groupBy');
+        var codeExpression = Container.createCodeExpression(selector, thisArg);
+        var exp = Container.createGroupExpression(this.expression, codeExpression);
+        var q = Container.createQueryable(this, exp);
+        return q;
+    },
 
     order: function(selector) {
        if (selector === '' || selector === undefined || selector === null) {
@@ -730,7 +740,13 @@ $data.Class.define('$data.Queryable', null, null,
                         predicate += "it." + param.name + " == this." + param.name;
                     }
 
-                    this.single(predicate, params, cbWrapper, transaction);
+                    this.filter(predicate, params).toArray({
+                        success: function(result){
+                            if (result.length != 1) return cbWrapper.error(new Exception('result count failed'));
+                            cbWrapper.success(result[0]);
+                        },
+                        error: cbWrapper.error
+                    }, transaction);
                 }
             }
         } catch (e) {
