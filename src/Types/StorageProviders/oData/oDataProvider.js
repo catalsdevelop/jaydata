@@ -520,7 +520,9 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
                 
                 var entityState = independentItem.data.entityState;
                 if(typeof this._buildRequestObject['EntityState_' + entityState] === 'function'){
-                    this._buildRequestObject['EntityState_' + entityState](this, independentItem, convertedItems, request, changedItems)
+                    if (!this._buildRequestObject['EntityState_' + entityState](this, independentItem, convertedItems, request, changedItems)){
+                        convertedItems.remove(independentItem.data);
+                    }
                 } else {
                     Guard.raise(new Exception("Not supported Entity state"));
                 }
@@ -535,20 +537,27 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
                 request.add(new activities.SetMethod("POST"), new activities.AppendUrl(item.data["@odata.context"] || item.entitySet.tableName));
                 if (item.data["@odata.type"]) request.add(new activities.SetDataProperty("@odata.type", item.data["@odata.type"]));
                 provider.save_getInitData(item, convertedItem, undefined, undefined, request, changedItems);
+                return request;
             },
             'EntityState_30': function EntityState_30(provider, item, convertedItem, request, changedItems) {
-                request.add(new activities.SetMethod(provider.providerConfiguration.UpdateMethod), new activities.AppendUrl(item.data["@odata.context"] || item.entitySet.tableName));
-                if (provider.getEntityKeysValue(item)) request.add(new activities.AppendUrl("(" + provider.getEntityKeysValue(item) + ")"));
-                if (item.data["@odata.type"]) request.add(new activities.SetDataProperty("@odata.type", item.data["@odata.type"]));
-
-                provider.addETagHeader(item, request);
-
-                provider.save_getInitData(item, convertedItem, undefined, undefined, request, changedItems);
+                const keysValue = provider.getEntityKeysValue(item);
+                if (keysValue) {
+                    request.add(new activities.SetMethod(provider.providerConfiguration.UpdateMethod), new activities.AppendUrl(item.data["@odata.context"] || item.entitySet.tableName));
+                    request.add(new activities.AppendUrl("(" + keysValue + ")"));
+                    if (item.data["@odata.type"]) request.add(new activities.SetDataProperty("@odata.type", item.data["@odata.type"]));
+                    provider.addETagHeader(item, request);
+                    provider.save_getInitData(item, convertedItem, undefined, undefined, request, changedItems);
+                    return request;
+                }
             },
             'EntityState_40': function EntityState_40(provider, item, convertedItem, request, changedItems) {
-                request.add(new activities.SetMethod("DELETE"), new activities.ClearRequestData(), new activities.AppendUrl(item.data["@odata.context"] || item.entitySet.tableName));
-                if (provider.getEntityKeysValue(item)) request.add(new activities.AppendUrl("(" + provider.getEntityKeysValue(item) + ")"));
-                provider.addETagHeader(item, request);
+                const keysValue = provider.getEntityKeysValue(item);
+                if (keysValue){
+                    request.add(new activities.SetMethod("DELETE"), new activities.ClearRequestData(), new activities.AppendUrl(item.data["@odata.context"] || item.entitySet.tableName));
+                    request.add(new activities.AppendUrl("(" + keysValue + ")"));
+                    provider.addETagHeader(item, request);
+                    return request;
+                }
             }
         }
     },
@@ -645,6 +654,9 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
                 case item.data.entityState === $data.EntityState.Added:
                 case this._propertyIsChanged(item.data, memdef):
                     return this.propertyConversationStrategies["default"].apply(this, arguments)
+                case !this._propertyIsChanged(item.data, memdef) && checkODataMode(this, 'sendAllPropertiesOnChange'):
+                    this.propertyConversationStrategies["default"].apply(this, arguments)
+                    return false
                 default: return false;
             }
         }
@@ -717,8 +729,23 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
         value:{
             "default": function (item, memdef, convertedItems, request, changedItems) {
                 var typeName = Container.resolveName(memdef.type);
+                if(memdef.elementType) {
+                    var elementType = Container.resolveType(memdef.elementType);
+                    if (elementType.isAssignableTo && elementType.isAssignableTo($data.Entity) && Array.isArray(item.physicalData[memdef.name])) {
+                        item.physicalData[memdef.name].forEach(function (complexElement) {
+                            var innerRequest = new activities.RequestBuilder(this);
+                            this.save_getInitData({ data: complexElement }, convertedItems, true, true, innerRequest);
+                            request.add(function(req){
+                                req.data = req.data || {}
+                                req.data[memdef.name] = req.data[memdef.name] || []
+                                req.data[memdef.name].push(innerRequest.build().get().data);
+                            })
+                        }, this)
+                        return true;
+                    }
+                }
                 var converter = this.fieldConverter.toDb[typeName];
-                request.add(new activities.SetProperty(memdef.name, converter ? converter(item.physicalData[memdef.name]) : item.physicalData[memdef.name]))
+                request.add(new activities.SetProperty(memdef.name, converter ? converter(item.physicalData[memdef.name], memdef) : item.physicalData[memdef.name]))
                 return true;
             },
             "withReferenceMethods": function (item, memdef, convertedItems, request, changedItems) {
@@ -901,6 +928,7 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
 
             length: [{
                 allowedType: 'string',
+                projection: function(v){ return v ? v.length : 0; },
                 dataType: "number", allowedIn: [$data.Expressions.FilterExpression, $data.Expressions.ProjectionExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
                 parameters: [{ name: "@expression", dataType: "string" }]
             },
@@ -921,6 +949,7 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
 
             strLength: {
                 mapTo: "length",
+                projection: function(v){ return v ? v.length : 0; },
                 dataType: "number", allowedIn: [$data.Expressions.FilterExpression, $data.Expressions.ProjectionExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
                 parameters: [{ name: "@expression", dataType: "string" }]
             },
@@ -971,27 +1000,45 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
             /* data functions */
 
             day: {
-                allowedIn: [$data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                allowedIn: [$data.Expressions.ProjectionExpression, $data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                dataType: "number",
+                projection: function(v){ return new Date(v).getUTCDate(); },
                 parameters: [{ name: "@expression", dataType: "date" }]
             },
             hour: {
-                allowedIn: [$data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                allowedIn: [$data.Expressions.ProjectionExpression, $data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                dataType: "number",
+                projection: function(v){ return new Date(v).getUTCHours(); },
                 parameters: [{ name: "@expression", dataType: "date" }]
             },
             minute: {
-                allowedIn: [$data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                allowedIn: [$data.Expressions.ProjectionExpression, $data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                dataType: "number",
+                projection: function(v){ return new Date(v).getUTCMinutes(); },
                 parameters: [{ name: "@expression", dataType: "date" }]
             },
             month: {
-                allowedIn: [$data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                allowedIn: [$data.Expressions.ProjectionExpression, $data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                dataType: "number",
+                projection: function(v){ return new Date(v).getUTCMonth() + 1; },
                 parameters: [{ name: "@expression", dataType: "date" }]
             },
             second: {
-                allowedIn: [$data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                allowedIn: [$data.Expressions.ProjectionExpression, $data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                dataType: "number",
+                projection: function(v){ return new Date(v).getUTCSeconds(); },
                 parameters: [{ name: "@expression", dataType: "date" }]
             },
             year: {
-                allowedIn: [$data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                allowedIn: [$data.Expressions.ProjectionExpression, $data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                dataType: "number",
+                projection: function(v){ return new Date(v).getFullYear(); },
+                parameters: [{ name: "@expression", dataType: "date" }]
+            },
+            fractionalseconds: {
+                allowedIn: [$data.Expressions.ProjectionExpression, $data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
+                dataType: "number",
+                projection: function(v){ return new Date(v).getUTCMilliseconds() / 1000; },
                 parameters: [{ name: "@expression", dataType: "date" }]
             },
 
@@ -1037,7 +1084,35 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
                 dataType: "boolean", allowedIn: [$data.Expressions.FilterExpression, $data.Expressions.OrderExpression, $data.Expressions.SomeExpression, $data.Expressions.EveryExpression],
                 parameters: [{ name: "@expression", dataType: 'GeometryPoint' }, { name: "in", dataType: 'GeometryPolygon' }]
 
-            }]
+            }],
+
+            // aggregate functions
+            'sum': {
+                allowedIn: [$data.Expressions.ProjectionExpression],
+                mapTo: 'sum',
+                aggregate: true
+            },
+            'count': {
+                allowedIn: [$data.Expressions.ProjectionExpression],
+                mapTo: 'countdistinct',
+                returnType: $data.Integer,
+                aggregate: true
+            },
+            'min': {
+                allowedIn: [$data.Expressions.ProjectionExpression],
+                mapTo: 'min',
+                aggregate: true
+            },
+            'max': {
+                allowedIn: [$data.Expressions.ProjectionExpression],
+                mapTo: 'max',
+                aggregate: true
+            },
+            'avg': {
+                allowedIn: [$data.Expressions.ProjectionExpression],
+                mapTo: 'average',
+                aggregate: true
+            }
         },
         enumerable: true,
         writable: true
@@ -1117,7 +1192,9 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
                 includeFrameName: '$count',
                 implementation: function(){ return 'true' }
             },
-            find: {}
+            find: {},
+            distinct: {},
+            groupBy: {}
         },
         enumerable: true,
         writable: true
@@ -1191,6 +1268,8 @@ $C('$data.storageProviders.oData.oDataProvider', $data.StorageProviderBase, null
             var field = memDefs[i];
             if (field.key) {
                 keyValue = entity.data[field.name];
+                if (Guard.isNullOrUndefined(keyValue)) continue;
+
                 var typeName = Container.resolveName(field.type);
 
                 var converter = this.fieldConverter.toDb[typeName];

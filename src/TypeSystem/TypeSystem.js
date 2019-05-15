@@ -248,7 +248,7 @@ $data.setGlobal = function(obj){
     var property = {};
     for (var name in this) {
       if (name !== 'defineBy' && name !== 'storageModel') {
-        if ((name === 'type' || name === 'dataType') && (this[name] && typeof this[name] === 'function')) {
+        if ((name === 'type' || name === 'dataType' || name === 'elementType') && (this[name] && typeof this[name] === 'function')) {
           try {
             property[name] = Container.resolveName(this[name]);
           } catch (e) {
@@ -340,6 +340,23 @@ $data.setGlobal = function(obj){
     },
     getMember: function(name) {
       return this[memberDefinitionPrefix + name];
+    },
+    getDeepMember: function(name) {
+      var member = this[memberDefinitionPrefix + name];
+
+      if(!member && name.indexOf('.') >= 0) {
+        var path = name.split('.');
+        var deepMember = deepMember = this[memberDefinitionPrefix + path[0]];
+        var i = 1;
+        for (; i < path.length; i++) {
+          var type = Container.resolveType(deepMember.elementType || deepMember.type);
+          deepMember = type.memberDefinitions.getMember(path[i]);
+        }
+
+        if (i >= path.length) member = deepMember;
+      }
+
+      return member;
     },
     setMember: function(value) {
       this[memberDefinitionPrefix + value.name] = value;
